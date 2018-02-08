@@ -1,4 +1,3 @@
-# machinelearning
-Python scripts for CNTK and Keras machine learning
+# nndqn
 
-Experimental machine learning projects in python.
+Using DQN to learn the game Nethack
