@@ -5,8 +5,8 @@ Created on Wed Nov 22 16:05:34 2017
 @author: dandrews
 """
 import sys
-sys.path.append('D:/local/machinelearning/textmap')
-from tmap import Map
+sys.path.append('../../nethack_py_interface/nhpyinterface')
+from nh_environment import NhEnv
 import matplotlib.pyplot as plt
 from IPython import get_ipython
 ipython = get_ipython()
@@ -26,9 +26,8 @@ class DDPG(object):
     batch_size =                1024
     game_episodes_per_update =  512
     epochs = 20000
-    grid_size = (4,4)
-    benchmark = 1 - ((grid_size[0] + grid_size[1] - 1) * 0.02)
-    input_shape = (84,84,3)
+    grid_size = (20,80)
+    input_shape = (21,80,3)
     TAU = 0.1
     min_epsilon = 0.05
     max_epsilon = 0.95
@@ -36,10 +35,8 @@ class DDPG(object):
     reward_lambda = 0.9
     priority_replay = False
     priortize_low_scores = False
-    use_maze = True
     train_actor=False
     actor_loops = 1
-    solved_wins = 100 # Number of epochs with no negative scores
     use_hra = True
     curriculum = None
 
@@ -57,15 +54,13 @@ class DDPG(object):
         self.epsilon_cumulative = []
         self.epsilon = 0.9
         self.last_lr_change = 0
-
-        e = Map(self.grid_size[0],self.grid_size[1])
-        e.USE_MAZE = self.use_maze
-        e.curriculum = self.curriculum # distance from goal player spawns at most
+        e = NhEnv()
         self.environment = e
-        self.action_count =  e.action_space.n
+        self.action_count = e.action_space.n
+        self.strategy_count = len(e.strategies)
         self.action_shape = (self.action_count,)
         self.buffer = ReplayBuffer(self.buffer_size)
-        num_rewards = len(e.hybrid_rewards())
+        num_rewards = len(e.auxiliary_features())
         self.actor_critic = ActorCritic(self.input_shape, self.action_shape, num_rewards)
         self.actor_critic_target = ActorCritic(self.input_shape, self.action_shape, num_rewards)
         self.possible_actions = np.eye(e.action_space.n)[np.arange(e.action_space.n)]
@@ -146,7 +141,9 @@ class DDPG(object):
 
         # Rollouts were 100% agent or 100% random
         # For larger grids test mixed games
-        while not e.done:
+        cumulative_score = 0
+
+        while not e.is_done:
             s = e.data()
 
             if agent_play:
@@ -157,20 +154,22 @@ class DDPG(object):
                 action = np.random.randint(self.action_count)
                 a = self.possible_actions[action]
 
+            #print("step")
             s_, r, t, info = e.step(action)
-            h = e.hybrid_rewards()
+            cumulative_score += r
+            h = e.auxiliary_features()
             move = namedtuple('move', ['s','a','r', 't','s_','h'])
             (move.s, move.a, move.s_, move.t, move.h) = s, a, s_, t, h
             moves.append(move)
 
         moves.reverse()
-        r = e.cumulative_score
+        r = cumulative_score
         for move in moves:
             move.r = r
             r *= self.reward_lambda
 
         moves.reverse()
-        return moves, e.cumulative_score
+        return moves, cumulative_score
 
 
     def add_replays_to_buffer(self):
@@ -218,9 +217,7 @@ class DDPG(object):
         return loss
 
     def is_solved(self):
-        winratio = self.winratio_cumulative
-        if len(winratio) > self.solved_wins and np.min(winratio[-self.solved_wins:]) > 0.9998:
-                    return True
+        # todo define "solved" criteria for initial tests
         return False
 
 
@@ -292,7 +289,7 @@ Use Hybrid Rewards: {} Curriculum: {}""".format(
         s = self.environment.data()
         s1 = np.expand_dims(s, axis=0)
         s4 = np.repeat(s1, self.action_shape[0], axis=0)
-        pred = ddpg.actor_critic_target.critic.predict([s4,self.possible_actions])
+        pred = self.actor_critic_target.critic.predict([s4,self.possible_actions])
         return self.possible_actions[np.argmax(pred)]
 
     def run_sample_games(self, num_games = 100, egreedy=True, use_critic=False, stop_on_loss=False):
@@ -300,7 +297,7 @@ Use Hybrid Rewards: {} Curriculum: {}""".format(
         e = self.environment
         for i in range(num_games):
             s = e.reset()
-            while not e.done:
+            while not e.is_done:
                 if use_critic:
                     choice = np.argmax(self.get_best_action_by_q())
                 else:
@@ -328,41 +325,8 @@ Use Hybrid Rewards: {} Curriculum: {}""".format(
         a /= np.sum(a)
         return a
 
-#%%
 
-
-###################################################
-if __name__ == '__main__':
-###################################################
-###################################################
-###################################################
-###################################################
-###################################################
-###################################################
-###################################################
-#%%
-
-    np.set_printoptions(suppress=True)
-    ddpg = DDPG()
-    #scores = ddpg.add_replays_to_buffer(random_data=True)
-
-#%%
-
-
-    def show_turn(e, title, index, egreedy, save):
-        #plt.imshow(e.data())
-        title= '\nE-greedy: {}'.format(title, e.moves, e.last_action['name'] ,str(e.player),egreedy)
-        annotations = e.render_plot()
-
-        if save:
-            dirname = 'gifs/{}'.format(title)
-            plt.savefig('{}fig-frame{}'.format(dirname,str(index).zfill(2)))
-            plt.close()
-        else:
-            plt.show()
-        return annotations
-#%%
-    def agent_play(ddpg,
+    def agent_play(self,
                    title="",
                    egreedy=True,
                    random_agent=False,
@@ -372,9 +336,9 @@ if __name__ == '__main__':
         from IPython import get_ipython
         ipython = get_ipython()
 
-        e = ddpg.environment
+        e = self.environment
         s = e.reset()
-        ddpg.start_state = e.data()
+        self.start_state = e.data()
         ann = None
         index = 0
         plt.close()
@@ -384,7 +348,7 @@ if __name__ == '__main__':
             ipython.magic("matplotlib qt5")
 
         while True:
-            annotations = show_turn(e, title, index, egreedy, save)
+            annotations = self.show_turn(title, index, egreedy, save)
             plt.show()
             #If not inline, bring to front.
             if index == 0:
@@ -401,12 +365,12 @@ if __name__ == '__main__':
             s1 = s.reshape(((1,) + s.shape))
 
             if use_critic:
-                s2 = np.repeat([e.data()], ddpg.action_shape[0], axis=0)
-                pred = ddpg.actor_critic.critic.predict([s2, ddpg.possible_actions]).squeeze()
+                s2 = np.repeat([e.data()], self.action_shape[0], axis=0)
+                pred = self.actor_critic.critic.predict([s2, self.possible_actions]).squeeze()
             else:
-                pred = ddpg.actor_critic.actor.predict(s1).squeeze()
+                pred = self.actor_critic.actor.predict(s1).squeeze()
 
-            pred = ddpg.softmax(pred)
+            pred = self.softmax(pred)
 
             if egreedy:
                 choice = np.argmax(pred)
@@ -418,114 +382,34 @@ if __name__ == '__main__':
 
             s, r, done, info = e.step(choice)
 
-            if e.done:
-                ann = show_turn(e, title, index, egreedy, save)
+            if e.is_done:
+                ann = self.show_turn(title, index, egreedy, save)
                 plt.show()
                 plt.pause(frame_pause * 2)
                 break
         ipython.magic("matplotlib inline")
         return e.cumulative_score, e.found_exit
 
-
-#%%
-    def avg_game_score(ddpg, num_games = 100, egreedy=True, use_critic=False, stop_on_loss=False):
-        scores = []
-        game_len = []
-        e = ddpg.environment
-        for i in range(100):
-            s = e.reset()
-            j = 0
-            while not e.done:
-                if use_critic:
-                    choice = np.argmax(ddpg.get_best_action_by_q(ddpg))
-                else:
-                    s1 = s.reshape(((1,) + s.shape))
-                    pred = ddpg.actor_critic.actor.predict(s1)[0]
-                    if egreedy:
-                        choice = np.argmax(pred)
-                    else:
-                        choice = np.random.choice(len(pred), p = pred)
-                s, r, done, info = e.step(choice)
-                j += 1
-            scores.append(r)
-            game_len.append(j)
-            if r < 0 and stop_on_loss:
-                print("loss detected")
-                break
-        return scores, game_len
-
-#%%
-    def compare_a_to_c(ddpg):
-        e = ddpg.environment
-        e.reset()
-        while not e.done:
-            s2 = np.array([e.data(), e.data(), e.data(), e.data()])
-            apred = ddpg.actor.predict(np.array([e.data()]))
-            cpred = ddpg.critic_target.predict([s2, ddpg.possible_actions]).reshape(1,4)
-            cchoice = np.argmax(cpred)
-            achoice = np.argmax(apred)
-            #if cchoice != achoice:
-            e.render()
-            print("actor", apred, e._actions[e.action_index[achoice]])
-            print("critic", cpred, e._actions[e.action_index[cchoice]])
-            print()
-            #    break
-            #else:
-            e.step(achoice)
-        print(e.cumulative_score, e.found_exit)
-
-#%%
-    def run_n_tests(n, buffer_size = 2048, batch_size= 512, game_episodes_per_update = 256, q = True, s = True):
-        winrates = []
-        for i in range(n):
-            print("{}/{} - buff: {}, batch: {}, epu: {}".format(i+1,n,buffer_size, batch_size, game_episodes_per_update))
-            ddpg.grid_size = (4,4,3)
-            ddpg.__init__()
-            ddpg.epochs      =               1000
-            ddpg.buffer_size =               buffer_size
-            ddpg.batch_size  =               batch_size
-            ddpg.game_episodes_per_update =  game_episodes_per_update
-            ddpg.priority_replay          =  q
-            ddpg.priortize_low_scores     =  s
-            epochs, winrate = ddpg.train(epochs_per_plot=ddpg.epochs+1)
-            winrates.append(winrate)
-
-        data = {'buffer_size':ddpg.buffer_size,
-                'batch_size':ddpg.batch_size,
-                'game_episodes_per_update':ddpg.game_episodes_per_update,
-                'prioritize bad Q': q,
-                'prioritize low score': s,
-                'winrates':winrates
-                }
-        return data
+    def show_turn(self, title, index, egreedy, save):
+        plt.title(title)
+        plt.imshow(self.e.data())
 
 
 #%%
-    def compare_hyperparams():
-        test_results = []
-        index = 0
 
-#        for bu in range(10,13):
-#            buffer_size = 2 ** bu
-#            for ba in range(9,10):
-#                if bu < ba:
-#                    break
-#                batch_size = 2 ** ba
-#                for epu in range(7,10):
-#                    if(ba < epu):
-#                        break
-#                    game_episodes_per_update = 2 ** epu
-        for q in [True]:
-            for s in [True]:
-                    print(index)
-                    index += 1
-                    data = run_n_tests(10, q=q, s=s )
-                    test_results.append(data)
-        return test_results
+
+###################################################
+if __name__ == '__main__':
+###################################################
 
 #%%
-    ddpg.train()
-    #data = compare_hyperparams()
-    #print(data)
+
+    np.set_printoptions(suppress=True)
+    nhdqn = DDPG()
+    try:
+        nhdqn.train()
+    except:
+        nhdqn.environment.nhc.close()
+        raise
 
 
